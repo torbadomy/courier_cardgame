@@ -1,0 +1,563 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>單王之爭：絕命外送 (10回合極速版)</title>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/p5.js/1.6.0/p5.min.js"></script>
+  <style>
+    body {
+      margin: 0;
+      padding: 0;
+      background-color: #222;
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      height: 100vh;
+      overflow: hidden;
+      font-family: "Microsoft JhengHei", sans-serif;
+    }
+    canvas {
+      box-shadow: 0 0 20px rgba(0,0,0,0.5);
+    }
+  </style>
+</head>
+<body>
+<script>
+/**
+ * 單王之爭：絕命外送 - 10回合極速版
+ * 修改：奧客消耗3/報酬150
+ */
+
+// --- 遊戲變數 ---
+let gameState = "START"; 
+const MAX_TURNS = 10; 
+let player = {
+  hp: 50,       
+  maxHp: 50,    
+  energy: 5,   
+  maxEnergy: 5,
+  money: 0,    
+  stars: 5.0    
+};
+
+let deck = [];
+let hand = [];
+let discardPile = [];
+let maxHandSize = 5;
+let turnCount = 1;
+let logs = [];
+let animations = []; 
+
+// UI 設定
+let cardWidth = 120;
+let cardHeight = 170;
+let uiColor = {
+  bg: [50, 50, 55], 
+  panel: [30, 30, 30],
+  accent: [0, 255, 150], 
+  danger: [255, 80, 80], 
+  text: [240, 240, 240]
+};
+
+// 按鈕位置配置 (右上角)
+const btnConfig = {
+  w: 120,
+  h: 50,
+  x: 800 - 130, 
+  y: 15
+};
+
+// --- 卡牌資料庫 ---
+const CARD_DATA = [
+  // 訂單類
+  { id: 1, name: "一杯珍奶", type: "ORDER", cost: 1, value: 30, desc: "簡單輕鬆，\n賺點零用錢。", color: [0, 200, 100] },
+  { id: 2, name: "炸雞桶全家餐", type: "ORDER", cost: 2, value: 70, desc: "味道很香，\n小心別偷吃。", color: [0, 180, 100] },
+  
+  // 颱風天 $200
+  { id: 3, name: "颱風天火鍋", type: "ORDER", cost: 4, value: 200, desc: "富貴險中求！\n若失敗代價慘痛。", color: [255, 215, 0] },
+  
+  // [修改] 奧客: 消耗3 / 報酬150
+  { id: 4, name: "奧客的訂單", type: "ORDER", cost: 3, value: 150, desc: "錢很多...\n但送完車況-10。", effect: "DMG_10", color: [150, 100, 50] },
+
+  // 行動類
+  { id: 5, name: "鑽車縫", type: "ACTION", cost: 0, value: 0, desc: "展現高超技術。\n體力 +2", effect: "ENERGY_2", color: [50, 150, 255] },
+  { id: 6, name: "喝蠻牛", type: "ACTION", cost: 0, value: 0, desc: "累了就喝。\n體力 +3，車況 -5", effect: "ENERGY_3_DMG_5", color: [50, 150, 255] },
+  { id: 7, name: "簡易維修", type: "ACTION", cost: 3, value: 0, desc: "零件漲價了。\n耗3體，車況+15", effect: "HEAL_15", color: [200, 200, 200] }, 
+  { id: 8, name: "紅燈右轉", type: "ACTION", cost: 0, value: 0, desc: "警察沒看到！\n抽 2 張牌", effect: "DRAW_2", color: [255, 100, 100] },
+];
+
+// --- p5.js 主程式 ---
+
+function setup() {
+  createCanvas(800, 600);
+  textAlign(CENTER, CENTER);
+  initGame();
+}
+
+function draw() {
+  background(uiColor.bg);
+  
+  if (gameState === "START") {
+    drawStartScreen();
+  } else if (gameState === "PLAY") {
+    drawGameUI();
+    drawHand();
+    drawAnimations();
+    checkHover();
+  } else if (gameState === "GAMEOVER") {
+    drawGameOver();
+  }
+}
+
+function mousePressed() {
+  if (gameState === "START") {
+    gameState = "PLAY";
+    startTurn();
+  } else if (gameState === "GAMEOVER") {
+    initGame();
+    gameState = "START";
+  } else if (gameState === "PLAY") {
+    // 檢查點擊卡牌
+    for (let i = hand.length - 1; i >= 0; i--) {
+      let c = hand[i];
+      if (isMouseOverCard(c.x, c.y, cardWidth, cardHeight)) {
+        playCard(i);
+        return;
+      }
+    }
+    
+    // 檢查點擊「結束回合」按鈕
+    if (isMouseOverBtn(btnConfig.x, btnConfig.y, btnConfig.w, btnConfig.h)) {
+      endTurn();
+    }
+  }
+}
+
+// --- 遊戲邏輯 ---
+
+function initGame() {
+  player = { hp: 50, maxHp: 50, energy: 5, maxEnergy: 5, money: 0, stars: 5.0 };
+  deck = [];
+  hand = [];
+  discardPile = [];
+  turnCount = 1;
+  logs = ["--- 外送開始 ---", `目標：撐過 ${MAX_TURNS} 回合！`];
+  createDeck();
+  shuffleDeck();
+}
+
+function createDeck() {
+  for (let i = 0; i < 15; i++) {
+    let cardTemplate = random(CARD_DATA);
+    if (random() > 0.6) cardTemplate = CARD_DATA[0]; 
+    deck.push({ ...cardTemplate, uid: i }); 
+  }
+}
+
+function shuffleDeck() {
+  for (let i = deck.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [deck[i], deck[j]] = [deck[j], deck[i]];
+  }
+}
+
+function startTurn() {
+  player.energy = player.maxEnergy; 
+  addLog(`--- Round ${turnCount} ---`);
+  
+  while (hand.length < maxHandSize) {
+    if (deck.length === 0) {
+      if (discardPile.length === 0) break;
+      deck = [...discardPile];
+      discardPile = [];
+      shuffleDeck();
+      addLog("牌庫重洗！");
+    }
+    hand.push(deck.pop());
+  }
+  
+  arrangeHand();
+}
+
+function arrangeHand() {
+  let startX = (width - (hand.length * (cardWidth + 10))) / 2 + cardWidth/2;
+  for (let i = 0; i < hand.length; i++) {
+    hand[i].x = startX + i * (cardWidth + 10);
+    hand[i].y = height - 120;
+    hand[i].targetY = height - 120;
+  }
+}
+
+function playCard(index) {
+  let card = hand[index];
+  
+  if (player.energy < card.cost) {
+    addLog("體力不足！", "red");
+    createAnimation("體力不足!", mouseX, mouseY, [255, 50, 50]);
+    return;
+  }
+  
+  player.energy -= card.cost;
+  
+  if (card.type === "ORDER") {
+    player.money += card.value;
+    createAnimation(`+$${card.value}`, width/2, height/2 - 50, [255, 215, 0]);
+    addLog(`完成：${card.name} (+$${card.value})`);
+    if (card.effect === "DMG_10") {
+        player.hp -= 10;
+        addLog("遇到奧客，心情受損 -10車況");
+    }
+  } else if (card.type === "ACTION") {
+    if (card.effect === "ENERGY_2") {
+        player.energy += 2;
+        addLog("鑽車縫成功！體力 +2");
+    } else if (card.effect === "ENERGY_3_DMG_5") {
+        player.energy += 3;
+        player.hp -= 5;
+        addLog("喝了蠻牛！體力+3 車況-5");
+    } else if (card.effect === "HEAL_15") { 
+        player.hp = Math.min(player.maxHp, player.hp + 15);
+        addLog("勉強修好了。車況 +15");
+    } else if (card.effect === "DRAW_2") {
+        drawCard(2);
+        addLog("違規超車！抽2張牌");
+    }
+  }
+  
+  discardPile.push(card);
+  hand.splice(index, 1);
+  arrangeHand();
+  
+  if (player.hp <= 0) {
+    gameState = "GAMEOVER";
+  }
+}
+
+function drawCard(num) {
+    for(let i=0; i<num; i++){
+        if(hand.length < maxHandSize + 2) { 
+             if (deck.length === 0) {
+                deck = [...discardPile];
+                discardPile = [];
+                shuffleDeck();
+            }
+            if (deck.length > 0) hand.push(deck.pop());
+        }
+    }
+    arrangeHand();
+}
+
+function endTurn() {
+  triggerRoadEvent();
+  
+  // 檢查是否死亡
+  if (player.hp <= 0) {
+    gameState = "GAMEOVER";
+    return;
+  }
+  
+  // 檢查是否到達10回合
+  if (turnCount >= MAX_TURNS) {
+    gameState = "GAMEOVER"; 
+    return;
+  }
+  
+  turnCount++;
+  while(hand.length > 0) {
+      discardPile.push(hand.pop());
+  }
+  
+  startTurn();
+}
+
+function triggerRoadEvent() {
+    let eventRoll = random();
+    let damage = 0;
+    let msg = "";
+    
+    if (eventRoll < 0.3) {
+        msg = "平安無事的一回合。";
+    } else if (eventRoll < 0.6) {
+        damage = 10;
+        msg = "三寶開車門！摔車 (車況-10)";
+    } else if (eventRoll < 0.8) {
+        damage = 20;
+        msg = "暴雨視線模糊打滑 (車況-20)";
+    } else {
+        damage = 5;
+        player.money = Math.max(0, player.money - 50);
+        msg = "警察開單！罰款$50 (車況-5)";
+    }
+    
+    player.hp -= damage;
+    addLog(msg, "orange");
+    if(damage > 0) createAnimation(`-${damage} HP`, width/2, height/2, [255, 50, 50]);
+}
+
+// --- 繪圖函數 ---
+
+function drawStartScreen() {
+  fill(0, 150);
+  rect(0, 0, width, height);
+  
+  fill(uiColor.accent);
+  textSize(60);
+  textStyle(BOLD);
+  text("單王之爭", width/2, height/2 - 60);
+  
+  fill(255);
+  textSize(30);
+  textStyle(NORMAL);
+  text("10回合極速版", width/2, height/2);
+  
+  textSize(20);
+  fill(200);
+  text(`目標：活過 ${MAX_TURNS} 回合並賺大錢`, width/2, height/2 + 60);
+  text("點擊畫面開始", width/2, height/2 + 100);
+}
+
+function drawGameOver() {
+  fill(0, 220);
+  rect(0, 0, width, height);
+  
+  let title = "";
+  let colorVal = [255, 255, 255];
+  
+  if (player.hp <= 0) {
+      title = "車毀人亡！";
+      colorVal = uiColor.danger;
+  } else {
+      title = "平安回家！";
+      colorVal = uiColor.accent;
+  }
+  
+  fill(colorVal);
+  textSize(60);
+  textStyle(BOLD);
+  text(title, width/2, height/2 - 50);
+  
+  fill(255);
+  textSize(30);
+  textStyle(NORMAL);
+  text(`最終業績: $${player.money}`, width/2, height/2 + 30);
+  
+  // 評價邏輯 (根據10回合調整標準)
+  let rank = "C";
+  if (player.hp > 0) {
+      if (player.money > 800) rank = "S (單王)"; 
+      else if (player.money > 500) rank = "A (優選)";
+      else if (player.money > 300) rank = "B (普通)";
+  } else {
+      rank = "F (報廢)";
+  }
+  
+  text(`評價: ${rank}`, width/2, height/2 + 70);
+  
+  textSize(20);
+  fill(200);
+  text("點擊畫面重新開始", width/2, height/2 + 140);
+}
+
+function drawGameUI() {
+  // 頂部狀態列背景
+  fill(uiColor.panel);
+  noStroke();
+  rect(0, 0, width, 80);
+  
+  // 數據顯示
+  textAlign(LEFT, CENTER);
+  textSize(20);
+  
+  // 錢
+  fill(255, 215, 0);
+  text(`💰 $${player.money}`, 30, 40);
+  
+  // 血量條
+  fill(200);
+  text("車況", 180, 25);
+  fill(50);
+  rect(180, 45, 150, 15, 5);
+  let hpRatio = player.hp / player.maxHp;
+  if(hpRatio > 0.5) fill(uiColor.accent);
+  else if(hpRatio > 0.25) fill(255, 165, 0);
+  else fill(uiColor.danger);
+  rect(180, 45, Math.max(0, map(player.hp, 0, player.maxHp, 0, 150)), 15, 5);
+  
+  fill(255);
+  textSize(14);
+  text(`${Math.max(0, player.hp)}/${player.maxHp}`, 230, 53);
+  
+  // 體力條
+  textSize(20);
+  fill(200);
+  text("體力", 380, 25);
+  for(let i=0; i<player.maxEnergy; i++) {
+      if(i < player.energy) fill(50, 150, 255);
+      else fill(80);
+      ellipse(390 + i * 25, 52, 18, 18);
+  }
+  
+  // 回合數顯示 (10回合版)
+  textAlign(RIGHT, CENTER);
+  fill(255);
+  textSize(22);
+  // 最後2回合變紅字
+  if(turnCount >= 8) fill(255, 100, 100); 
+  text(`Round ${turnCount} / ${MAX_TURNS}`, width - 140, 40);
+  
+  // Log 區塊
+  fill(0, 100);
+  stroke(100);
+  rect(width/2 - 200, 100, 400, 120, 5);
+  noStroke();
+  textAlign(CENTER, TOP);
+  textSize(16);
+  let logY = 110;
+  for(let i = logs.length - 1; i >= Math.max(0, logs.length - 4); i--) {
+     let colorVal = logs[i].includes("車況") || logs[i].includes("不足") ? [255, 100, 100] : [220, 220, 220];
+     fill(colorVal);
+     text(logs[i], width/2, logY);
+     logY += 25;
+  }
+  
+  // 結束回合按鈕
+  let btnX = btnConfig.x;
+  let btnY = btnConfig.y;
+  let btnW = btnConfig.w;
+  let btnH = btnConfig.h;
+  
+  let isHover = isMouseOverBtn(btnX, btnY, btnW, btnH);
+  fill(isHover ? [255, 100, 100] : [200, 50, 50]);
+  rect(btnX, btnY, btnW, btnH, 10);
+  
+  fill(255);
+  textAlign(CENTER, CENTER);
+  textSize(20);
+  text("結束回合", btnX + btnW/2, btnY + btnH/2);
+}
+
+function drawHand() {
+  rectMode(CENTER);
+  for (let i = 0; i < hand.length; i++) {
+    let c = hand[i];
+    let isHover = isMouseOverCard(c.x, c.y, cardWidth, cardHeight);
+    
+    let yPos = isHover ? c.y - 30 : c.y;
+    
+    push();
+    translate(c.x, yPos);
+    
+    // 卡背
+    fill(0, 100);
+    noStroke();
+    rect(5, 5, cardWidth, cardHeight, 10);
+    
+    // 卡面
+    fill(250);
+    stroke(c.color);
+    strokeWeight(isHover ? 4 : 2);
+    rect(0, 0, cardWidth, cardHeight, 10);
+    
+    // 標題
+    fill(c.color);
+    noStroke();
+    rect(0, -cardHeight/2 + 20, cardWidth, 40, 10, 10, 0, 0);
+    
+    fill(255);
+    textSize(18);
+    textStyle(BOLD);
+    textAlign(CENTER, CENTER);
+    text(c.name, 0, -cardHeight/2 + 20);
+    
+    // 費用
+    fill(50, 100, 255);
+    ellipse(-cardWidth/2 + 15, -cardHeight/2 + 15, 25, 25);
+    fill(255);
+    textSize(16);
+    text(c.cost, -cardWidth/2 + 15, -cardHeight/2 + 16);
+    
+    // 如果是訂單，顯示價格
+    if (c.type === "ORDER") {
+        fill(200, 150, 0); // 金色陰影
+        textSize(32);
+        textStyle(BOLD);
+        text(`$${c.value}`, 2, 5); 
+        fill(255, 215, 0); // 金色
+        text(`$${c.value}`, 0, 3);
+    }
+    
+    // 描述
+    fill(50);
+    textSize(14);
+    textStyle(NORMAL);
+    let descY = c.type === "ORDER" ? 40 : 10; 
+    text(c.desc, 0, descY, cardWidth - 20, 80);
+    
+    // 類別
+    textSize(12);
+    fill(100);
+    text(c.type === "ORDER" ? "訂單" : "行動", 0, cardHeight/2 - 15);
+    
+    pop();
+  }
+  rectMode(CORNER);
+}
+
+function createAnimation(txt, x, y, col) {
+  animations.push({
+    txt: txt,
+    x: x,
+    y: y,
+    alpha: 255,
+    color: col
+  });
+}
+
+function drawAnimations() {
+  for (let i = animations.length - 1; i >= 0; i--) {
+    let a = animations[i];
+    fill(a.color[0], a.color[1], a.color[2], a.alpha);
+    stroke(0, a.alpha);
+    strokeWeight(2);
+    textSize(24);
+    text(a.txt, a.x, a.y);
+    a.y -= 1.5; 
+    a.alpha -= 5; 
+    if (a.alpha <= 0) animations.splice(i, 1);
+  }
+}
+
+function checkHover() {
+  cursor(ARROW);
+  for (let c of hand) {
+    if (isMouseOverCard(c.x, c.y, cardWidth, cardHeight)) {
+      cursor(HAND);
+      return;
+    }
+  }
+  if (isMouseOverBtn(btnConfig.x, btnConfig.y, btnConfig.w, btnConfig.h)) {
+     cursor(HAND);
+  }
+}
+
+function isMouseOverCard(x, y, w, h) {
+  if (gameState !== "PLAY") return false;
+  return mouseX > x - w/2 && mouseX < x + w/2 &&
+         mouseY > y - h/2 && mouseY < y + h/2;
+}
+
+function isMouseOverBtn(x, y, w, h) {
+  if (gameState !== "PLAY") return false;
+  return mouseX > x && mouseX < x + w &&
+         mouseY > y && mouseY < y + h;
+}
+
+function addLog(msg, colorType) {
+    logs.push(msg);
+    if(logs.length > 6) logs.shift();
+}
+
+</script>
+</body>
+</html>
